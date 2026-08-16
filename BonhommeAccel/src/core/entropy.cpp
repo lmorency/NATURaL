@@ -100,6 +100,9 @@ double circular_shannon_entropy(const double* angles, size_t count, int bin_coun
         a = std::fmod(a, 360.0);
         if (a > 180.0) a -= 360.0;
         if (a < -180.0) a += 360.0;
+        // Canonicalize the cut: +180 ≡ -180 are the same angle; fold both onto -180
+        // so SIMD (floor-based) and scalar (fmod-based) wrap agree on this boundary.
+        if (a == 180.0) a = -180.0;
 
         // Map [-180, 180) -> bin index [0, bin_count)
         int idx = static_cast<int>((a + 180.0) / bin_width);

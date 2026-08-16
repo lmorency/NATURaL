@@ -15,33 +15,45 @@ namespace ba::core {
 double pearson_correlation(const double* x, const double* y, size_t count) {
     if (!x || !y || count < 2) return 0.0;
 
-    // Filter pairs where both values are finite
-    std::vector<double> cx, cy;
-    cx.reserve(count);
-    cy.reserve(count);
-
+    // Fast path: avoid the heap copy when every pair is finite.
+    bool all_finite = true;
     for (size_t i = 0; i < count; ++i) {
-        if (std::isfinite(x[i]) && std::isfinite(y[i])) {
-            cx.push_back(x[i]);
-            cy.push_back(y[i]);
+        if (!std::isfinite(x[i]) || !std::isfinite(y[i])) { all_finite = false; break; }
+    }
+
+    const double* px = x;
+    const double* py = y;
+    size_t n = count;
+
+    std::vector<double> cx, cy;
+    if (!all_finite) {
+        cx.reserve(count);
+        cy.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            if (std::isfinite(x[i]) && std::isfinite(y[i])) {
+                cx.push_back(x[i]);
+                cy.push_back(y[i]);
+            }
         }
+        n = cx.size();
+        if (n < 2) return 0.0;
+        px = cx.data();
+        py = cy.data();
     }
 
-    double n = static_cast<double>(cx.size());
-    if (n < 2.0) return 0.0;
-
+    double n_dbl = static_cast<double>(n);
     double mean_x = 0.0, mean_y = 0.0;
-    for (size_t i = 0; i < cx.size(); ++i) {
-        mean_x += cx[i];
-        mean_y += cy[i];
+    for (size_t i = 0; i < n; ++i) {
+        mean_x += px[i];
+        mean_y += py[i];
     }
-    mean_x /= n;
-    mean_y /= n;
+    mean_x /= n_dbl;
+    mean_y /= n_dbl;
 
     double sum_xy = 0.0, sum_x2 = 0.0, sum_y2 = 0.0;
-    for (size_t i = 0; i < cx.size(); ++i) {
-        double dx = cx[i] - mean_x;
-        double dy = cy[i] - mean_y;
+    for (size_t i = 0; i < n; ++i) {
+        double dx = px[i] - mean_x;
+        double dy = py[i] - mean_y;
         sum_xy += dx * dy;
         sum_x2 += dx * dx;
         sum_y2 += dy * dy;

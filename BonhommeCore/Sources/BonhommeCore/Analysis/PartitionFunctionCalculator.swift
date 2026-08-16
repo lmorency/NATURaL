@@ -84,8 +84,8 @@ import Foundation
 /// computational discovery.
 public struct PartitionFunctionCalculator: Sendable {
 
-    /// Boltzmann constant in kcal/(mol·K).
-    private static let kB: Double = 1.987e-3  // R gas constant, kcal/(mol·K)
+    /// Gas constant in kcal/(mol·K) — shared source of truth.
+    private static let kB: Double = ThermodynamicConstants.R
 
     /// Temperature in Kelvin.
     public let temperatureK: Double
@@ -171,6 +171,7 @@ public struct PartitionFunctionCalculator: Sendable {
         // Steps 7-9 fused: ensemble entropy, Shannon entropy, mean energy.
         // Single pass with inline Kahan accumulators (eliminates 3×N allocations).
         var sumPLogP = 0.0, cPLogP = 0.0
+        var sumPLogG = 0.0, cPLogG = 0.0
         var sumPLog2P = 0.0, cPLog2P = 0.0
         var sumPE = 0.0, cPE = 0.0
 
@@ -179,11 +180,15 @@ public struct PartitionFunctionCalculator: Sendable {
             if p > 0 {
                 kahanAccumulate(&sumPLogP, &cPLogP, p * log(p))
                 kahanAccumulate(&sumPLog2P, &cPLog2P, p * log2(p))
+                kahanAccumulate(&sumPLogG, &cPLogG, p * log(g[i]))
             }
             kahanAccumulate(&sumPE, &cPE, p * freeEnergies[i])
         }
 
-        let ensembleEntropyKcalPerK = -Self.kB * sumPLogP
+        // Gibbs entropy over the full microstate set: S = -k Σ pᵢ ln(pᵢ/gᵢ).
+        // The coarse-grained level entropy -k Σ pᵢ ln pᵢ drops the k Σ pᵢ ln gᵢ term,
+        // which breaks the identity F = ⟨E⟩ − T·S whenever degeneracies gᵢ > 1.
+        let ensembleEntropyKcalPerK = -Self.kB * (sumPLogP - sumPLogG)
         let shannonEntropyBits = -sumPLog2P
         let meanEnergy = sumPE
 
@@ -635,7 +640,8 @@ public struct EnsembleResult: Sendable {
     public let ensembleFreeEnergy: Double
 
     /// Ensemble configurational entropy of the Boltzmann population:
-    /// S = -k · Σ pᵢ · ln(pᵢ), reported with k in kcal/(mol·K).
+    /// S = -k · Σ pᵢ · ln(pᵢ/gᵢ), reported with k in kcal/(mol·K).
+    /// Includes the degeneracy term so F = ⟨E⟩ − T·S holds for gᵢ > 1.
     /// Higher = more evenly distributed population (entropic binding).
     /// Independent of whether Eᵢ are kcal or scores (depends only on {pᵢ}).
     public let ensembleEntropyKcalPerK: Double
@@ -707,7 +713,7 @@ public struct EnsembleResult: Sendable {
     /// - Returns: Array of binding mode groups, each containing connected poses
     ///   sorted by Boltzmann weight. Groups are sorted by total weight descending.
     public func bindingModes(energyRadius: Double? = nil) -> [[PoseAttribution]] {
-        let kT = 1.987e-3 * temperatureK
+        let kT = ThermodynamicConstants.R * temperatureK
         let radius = energyRadius ?? (2.0 * kT)
         let essential = attributions.filter(\.isEssential)
         guard !essential.isEmpty else { return [] }

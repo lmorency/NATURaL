@@ -104,7 +104,8 @@ void ba_clear_backend_override(void) {
 }
 
 BABackend ba_recommend_backend_for_n(size_t element_count) {
-    BABackend peak = ba::probe_best_backend();
+    // Use the cached active backend rather than re-enumerating hardware per call.
+    BABackend peak = ba::get_backend();
     const bool is_gpu =
         peak == BA_BACKEND_METAL || peak == BA_BACKEND_CUDA || peak == BA_BACKEND_ROCM;
     if (is_gpu && element_count < kRecommendGpuMinN) {
@@ -628,9 +629,14 @@ static double dispatch_pearson(const double* x, const double* y, size_t count) {
 #endif
 #if defined(BA_HAS_METAL)
         case BA_BACKEND_METAL: {
-            // Float32 GPU path; fall back to double SIMD/scalar on failure.
+            // Float32 GPU second-moment reduce; fall back to double on failure.
             double r = ba::metal::pearson_correlation_metal(x, y, count);
-            return std::isfinite(r) ? r : fallback_pearson(x, y, count);
+            if (!std::isfinite(r)) return fallback_pearson(x, y, count);
+            // Float32 accumulation loses precision near |r| = 1 (cancellation in
+            // the denominator); recompute that boundary region in double so the
+            // scientific (CrossDomainValidator) result stays exact.
+            if (std::abs(r) > 0.999) return fallback_pearson(x, y, count);
+            return r;
         }
 #endif
 #if defined(BA_HAS_NEON)

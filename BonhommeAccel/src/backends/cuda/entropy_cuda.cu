@@ -74,6 +74,7 @@ __global__ void circular_histogram_kernel(
             a = fmod(a, 360.0);
             if (a > 180.0) a -= 360.0;
             if (a < -180.0) a += 360.0;
+            if (a == 180.0) a = -180.0;
             int bin = clamp_bin((int)((a + 180.0) / bin_width), bin_count);
             atomicAdd(&shared_bins[bin], 1);
         }

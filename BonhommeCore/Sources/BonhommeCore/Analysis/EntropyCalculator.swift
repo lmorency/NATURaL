@@ -141,6 +141,9 @@ public struct EntropyCalculator: Sendable {
             var a = angle.truncatingRemainder(dividingBy: 360.0)
             if a > 180.0 { a -= 360.0 }
             if a < -180.0 { a += 360.0 }
+            // Canonicalize the cut: +180 ≡ -180 are the same angle; fold both onto -180
+            // so they land in the same bin (parity with the SIMD/C++ kernels).
+            if a == 180.0 { a = -180.0 }
             // Map [-180, 180) → bin index [0, binCount)
             var idx = Int((a + 180.0) / binWidth)
             if idx < 0 { idx = 0 }
@@ -285,7 +288,9 @@ public enum EntropyEvent: String, Sendable {
 /// the `detect_entropy_plateau` in FlexAIDdS.
 public struct EntropyEventDetector: Sendable {
     public let windowSize: Int
+    /// Z-score threshold for collapse detection (default -3.2σ).
     public let collapseThreshold: Double
+    /// Z-score threshold for expansion detection (default +3.2σ).
     public let expansionThreshold: Double
     public let oscillationWindow: Int
 
@@ -328,10 +333,14 @@ public struct EntropyEventDetector: Sendable {
 
         let windowReady = count >= windowSize
 
+        // Classify on the rolling z-score (delta / std), not the raw bit delta:
+        // a raw ±3.2-bit swing is ~65% of the full log2(32) range and effectively
+        // never fires. Thresholding z keeps collapse/expansion a meaningful
+        // "Nσ" event across entropy scales (mirrors FlexAIDdS CollapseDetector).
         var event: EntropyEvent = .none
-        if windowReady && delta < collapseThreshold {
+        if windowReady && z < collapseThreshold {
             event = .collapse
-        } else if windowReady && delta > expansionThreshold {
+        } else if windowReady && z > expansionThreshold {
             event = .expansion
         }
 
@@ -383,19 +392,33 @@ public func pearsonCorrelation(_ x: [Double], _ y: [Double]) -> Double {
     }
     #endif
 
-    let n = Double(x.count)
-    guard n >= 2, x.count == y.count else { return 0 }
+    guard x.count >= 2, x.count == y.count else { return 0 }
 
-    let meanX = x.reduce(0, +) / n
-    let meanY = y.reduce(0, +) / n
+    // Filter non-finite pairs (parity with linearRegression and the C++ Accel core).
+    var cx: [Double] = []
+    var cy: [Double] = []
+    cx.reserveCapacity(x.count)
+    cy.reserveCapacity(y.count)
+    for i in 0..<x.count {
+        if x[i].isFinite && y[i].isFinite {
+            cx.append(x[i])
+            cy.append(y[i])
+        }
+    }
+
+    let n = Double(cx.count)
+    guard n >= 2 else { return 0 }
+
+    let meanX = cx.reduce(0, +) / n
+    let meanY = cy.reduce(0, +) / n
 
     var sumXY = 0.0
     var sumX2 = 0.0
     var sumY2 = 0.0
 
-    for i in 0..<x.count {
-        let dx = x[i] - meanX
-        let dy = y[i] - meanY
+    for i in 0..<cx.count {
+        let dx = cx[i] - meanX
+        let dy = cy[i] - meanY
         sumXY += dx * dy
         sumX2 += dx * dx
         sumY2 += dy * dy

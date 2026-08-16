@@ -17,68 +17,17 @@
 
 namespace ba::simd {
 
-static inline double hmin_pd(__m512d v) {
-    __m256d lo = _mm512_castpd512_pd256(v);
-    __m256d hi = _mm512_extractf64x4_pd(v, 1);
-    __m256d m256 = _mm256_min_pd(lo, hi);
-    __m128d lo128 = _mm256_castpd256_pd128(m256);
-    __m128d hi128 = _mm256_extractf128_pd(m256, 1);
-    __m128d m = _mm_min_pd(lo128, hi128);
-    __m128d m2 = _mm_min_pd(m, _mm_permute_pd(m, 1));
-    return _mm_cvtsd_f64(m2);
-}
-
-static inline double hmax_pd(__m512d v) {
-    __m256d lo = _mm512_castpd512_pd256(v);
-    __m256d hi = _mm512_extractf64x4_pd(v, 1);
-    __m256d m256 = _mm256_max_pd(lo, hi);
-    __m128d lo128 = _mm256_castpd256_pd128(m256);
-    __m128d hi128 = _mm256_extractf128_pd(m256, 1);
-    __m128d m = _mm_max_pd(lo128, hi128);
-    __m128d m2 = _mm_max_pd(m, _mm_permute_pd(m, 1));
-    return _mm_cvtsd_f64(m2);
-}
-
 double shannon_entropy_avx512(const double* values, size_t count, int bin_count) {
     if (!values || count < 2 || bin_count < 1) return 0.0;
 
     // Single pass min/max without allocating a cleaned copy.
+    // Kept scalar: the histogram scatter (second pass) dominates, and a vector
+    // min/max here would only recompute the same values it already folded.
     double min_val = std::numeric_limits<double>::max();
     double max_val = std::numeric_limits<double>::lowest();
     size_t clean_count = 0;
 
-    size_t simd_end = (count / 8) * 8;
-    __m512d vmin = _mm512_set1_pd(std::numeric_limits<double>::max());
-    __m512d vmax = _mm512_set1_pd(std::numeric_limits<double>::lowest());
-    bool any_simd_finite = false;
-
-    for (size_t i = 0; i < simd_end; i += 8) {
-        bool all_finite = true;
-        for (int k = 0; k < 8; ++k) {
-            double v = values[i + static_cast<size_t>(k)];
-            if (!std::isfinite(v)) {
-                all_finite = false;
-            } else {
-                ++clean_count;
-                min_val = std::min(min_val, v);
-                max_val = std::max(max_val, v);
-            }
-        }
-        // Vector min/max only for all-finite lanes (NaN poisons _mm512_min_pd).
-        if (all_finite) {
-            __m512d v = _mm512_loadu_pd(&values[i]);
-            vmin = _mm512_min_pd(vmin, v);
-            vmax = _mm512_max_pd(vmax, v);
-            any_simd_finite = true;
-        }
-    }
-
-    if (any_simd_finite) {
-        min_val = std::min(min_val, hmin_pd(vmin));
-        max_val = std::max(max_val, hmax_pd(vmax));
-    }
-
-    for (size_t i = simd_end; i < count; ++i) {
+    for (size_t i = 0; i < count; ++i) {
         double v = values[i];
         if (!std::isfinite(v)) continue;
         ++clean_count;
@@ -152,6 +101,7 @@ double circular_shannon_entropy_avx512(const double* angles, size_t count, int b
                 a = std::fmod(a, 360.0);
                 if (a > 180.0) a -= 360.0;
                 if (a < -180.0) a += 360.0;
+                if (a == 180.0) a = -180.0;
                 int idx = static_cast<int>((a + 180.0) / bin_width);
                 if (idx < 0) idx = 0;
                 if (idx >= bin_count) idx = bin_count - 1;
@@ -173,6 +123,11 @@ double circular_shannon_entropy_avx512(const double* angles, size_t count, int b
         __mmask8 ltn180 = _mm512_cmp_pd_mask(a, vn180, _CMP_LT_OQ);
         a = _mm512_mask_add_pd(a, ltn180, a, v360);
 
+        // Canonicalize the cut: floor-fmod maps -180 -> +180; fold +180 onto -180
+        // so the SIMD path matches scalar fmod (both -> bin 0).
+        __mmask8 eq180 = _mm512_cmp_pd_mask(a, v180, _CMP_EQ_OQ);
+        a = _mm512_mask_mov_pd(a, eq180, vn180);
+
         // Bin index
         __m512d shifted = _mm512_add_pd(a, v180);
         __m512d fidx = _mm512_div_pd(shifted, vbin_width);
@@ -193,6 +148,7 @@ double circular_shannon_entropy_avx512(const double* angles, size_t count, int b
         a = std::fmod(a, 360.0);
         if (a > 180.0) a -= 360.0;
         if (a < -180.0) a += 360.0;
+        if (a == 180.0) a = -180.0;
         int idx = static_cast<int>((a + 180.0) / bin_width);
         if (idx < 0) idx = 0;
         if (idx >= bin_count) idx = bin_count - 1;

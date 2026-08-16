@@ -95,9 +95,8 @@ public struct AffinityMeasurement: Sendable, Codable {
     /// Returns kcal/mol (negative = favorable binding).
     public var computedDeltaGKcal: Double? {
         guard let affinityNM = bestAffinityNM, affinityNM > 0 else { return nil }
-        let R: Double = 1.987e-3  // kcal/(mol·K)
         let affinityM = affinityNM * 1e-9
-        return R * conditions.temperatureK * log(affinityM)
+        return ThermodynamicConstants.R * conditions.temperatureK * log(affinityM)
     }
 }
 
@@ -158,9 +157,8 @@ public struct ThermodynamicDecomposition: Sendable, Codable {
     /// Convert -TΔS to Shannon entropy bits for FlexAID∆S comparison.
     /// -TΔS (kcal/mol) → ΔS (bits) via: ΔS_bits = -(-TΔS) / (T × R × ln2)
     public var deltaSBits: Double {
-        let R: Double = 1.987e-3  // kcal/(mol·K)
         guard temperatureK > 0 else { return 0 }
-        return -minusTDeltaSKcal / (temperatureK * R * log(2.0))
+        return -minusTDeltaSKcal / (temperatureK * ThermodynamicConstants.R * log(2.0))
     }
 }
 

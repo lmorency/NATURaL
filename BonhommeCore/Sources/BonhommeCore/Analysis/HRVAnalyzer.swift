@@ -136,7 +136,7 @@ public struct HRVAnalyzer: SignalAnalyzer, Sendable {
     }
 
     /// Map entropy (bits) to a 0–1 score where 1 = maximally focused.
-    /// Uses EntropyCalculator defaults (maxEntropy: 8.0) — do not alter.
+    /// Normalizes against log₂(binCount) (5.0 for the default 32 bins).
     private func entropyToScore(_ entropy: Double) -> Double {
         entropyCalc.entropyToScore(entropy)
     }

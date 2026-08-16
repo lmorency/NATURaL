@@ -1,8 +1,9 @@
 /*
  * entropy_neon.cpp — ARM NEON-accelerated Shannon entropy.
  *
- * Adaptive: 2-wide min/max; histogram scatter remains scalar.
- * Circular: 2-wide floor-fmod wrap + bin index (parity with AVX2).
+ * Adaptive: scalar min/max (histogram scatter dominates the cost).
+ * Circular: 2-wide floor-fmod wrap + bin index (parity with AVX2), with the
+ *   ±180 cut canonicalized to -180 so it matches scalar fmod.
  * Fixed-domain: 2-wide clamp + bin index.
  * Entropy reduce over bins is always scalar (bin_count is small).
  */
@@ -21,48 +22,14 @@ namespace ba::simd {
 double shannon_entropy_neon(const double* values, size_t count, int bin_count) {
     if (!values || count < 2 || bin_count < 1) return 0.0;
 
-    // Single pass: count finite + min/max (NEON over all finite-aware scalar tail)
-    // Avoids allocating a cleaned copy of the full input.
+    // Single pass: count finite + min/max, without allocating a cleaned copy.
+    // Kept scalar: the histogram scatter (second pass) dominates, and a vector
+    // min/max here would only recompute the same values it already folded.
     double min_val = std::numeric_limits<double>::max();
     double max_val = std::numeric_limits<double>::lowest();
     size_t clean_count = 0;
 
-    size_t simd_end = (count / 2) * 2;
-    float64x2_t vmin = vdupq_n_f64(std::numeric_limits<double>::max());
-    float64x2_t vmax = vdupq_n_f64(std::numeric_limits<double>::lowest());
-    // Track whether any finite pair was loaded into the vector accumulators.
-    bool any_simd_finite = false;
-
-    for (size_t i = 0; i < simd_end; i += 2) {
-        double a = values[i];
-        double b = values[i + 1];
-        const bool fa = std::isfinite(a);
-        const bool fb = std::isfinite(b);
-        if (fa) {
-            ++clean_count;
-            min_val = std::min(min_val, a);
-            max_val = std::max(max_val, a);
-        }
-        if (fb) {
-            ++clean_count;
-            min_val = std::min(min_val, b);
-            max_val = std::max(max_val, b);
-        }
-        // Vector min/max only when both finite (avoids NaN poisoning of vminq/vmaxq).
-        if (fa && fb) {
-            float64x2_t v = vld1q_f64(&values[i]);
-            vmin = vminq_f64(vmin, v);
-            vmax = vmaxq_f64(vmax, v);
-            any_simd_finite = true;
-        }
-    }
-
-    if (any_simd_finite) {
-        min_val = std::min(min_val, std::min(vgetq_lane_f64(vmin, 0), vgetq_lane_f64(vmin, 1)));
-        max_val = std::max(max_val, std::max(vgetq_lane_f64(vmax, 0), vgetq_lane_f64(vmax, 1)));
-    }
-
-    for (size_t i = simd_end; i < count; ++i) {
+    for (size_t i = 0; i < count; ++i) {
         double v = values[i];
         if (!std::isfinite(v)) continue;
         ++clean_count;
@@ -106,6 +73,7 @@ static inline void circular_bin_scalar(double a, double bin_width, int bin_count
     a = std::fmod(a, 360.0);
     if (a > 180.0) a -= 360.0;
     if (a < -180.0) a += 360.0;
+    if (a == 180.0) a = -180.0;
     int idx = static_cast<int>((a + 180.0) / bin_width);
     if (idx < 0) idx = 0;
     if (idx >= bin_count) idx = bin_count - 1;
@@ -156,6 +124,11 @@ double circular_shannon_entropy_neon(const double* angles, size_t count, int bin
         a = vbslq_f64(gt180, vsubq_f64(a, v360), a);
         uint64x2_t ltn180 = vcltq_f64(a, vn180);
         a = vbslq_f64(ltn180, vaddq_f64(a, v360), a);
+
+        // Canonicalize the cut: floor-fmod maps -180 -> +180; fold +180 onto -180
+        // so the SIMD path matches scalar fmod (both -> bin 0).
+        uint64x2_t eq180 = vceqq_f64(a, v180);
+        a = vbslq_f64(eq180, vn180, a);
 
         // Bin index: floor((a + 180) * inv_width), clamp to [0, bin_count-1]
         float64x2_t fidx = vmulq_f64(vaddq_f64(a, v180), vinv_w);

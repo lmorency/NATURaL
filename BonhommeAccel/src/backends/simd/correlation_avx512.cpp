@@ -28,19 +28,31 @@ static inline double hsum_pd(__m512d v) {
 double pearson_correlation_avx512(const double* x, const double* y, size_t count) {
     if (!x || !y || count < 2) return 0.0;
 
-    // Filter NaN pairs
-    std::vector<double> cx, cy;
-    cx.reserve(count);
-    cy.reserve(count);
+    // Fast path: skip the heap copy when every pair is finite.
+    bool all_finite = true;
     for (size_t i = 0; i < count; ++i) {
-        if (std::isfinite(x[i]) && std::isfinite(y[i])) {
-            cx.push_back(x[i]);
-            cy.push_back(y[i]);
-        }
+        if (!std::isfinite(x[i]) || !std::isfinite(y[i])) { all_finite = false; break; }
     }
 
-    size_t n = cx.size();
-    if (n < 2) return 0.0;
+    const double* px = x;
+    const double* py = y;
+    size_t n = count;
+
+    std::vector<double> cx, cy;
+    if (!all_finite) {
+        cx.reserve(count);
+        cy.reserve(count);
+        for (size_t i = 0; i < count; ++i) {
+            if (std::isfinite(x[i]) && std::isfinite(y[i])) {
+                cx.push_back(x[i]);
+                cy.push_back(y[i]);
+            }
+        }
+        n = cx.size();
+        if (n < 2) return 0.0;
+        px = cx.data();
+        py = cy.data();
+    }
 
     // Mean computation (AVX-512, 8-wide)
     size_t simd_end = (n / 8) * 8;
@@ -48,15 +60,15 @@ double pearson_correlation_avx512(const double* x, const double* y, size_t count
     __m512d vsum_y = _mm512_setzero_pd();
 
     for (size_t i = 0; i < simd_end; i += 8) {
-        vsum_x = _mm512_add_pd(vsum_x, _mm512_loadu_pd(&cx[i]));
-        vsum_y = _mm512_add_pd(vsum_y, _mm512_loadu_pd(&cy[i]));
+        vsum_x = _mm512_add_pd(vsum_x, _mm512_loadu_pd(&px[i]));
+        vsum_y = _mm512_add_pd(vsum_y, _mm512_loadu_pd(&py[i]));
     }
 
     double sum_x = hsum_pd(vsum_x);
     double sum_y = hsum_pd(vsum_y);
     for (size_t i = simd_end; i < n; ++i) {
-        sum_x += cx[i];
-        sum_y += cy[i];
+        sum_x += px[i];
+        sum_y += py[i];
     }
 
     double mean_x = sum_x / static_cast<double>(n);
@@ -70,8 +82,8 @@ double pearson_correlation_avx512(const double* x, const double* y, size_t count
     __m512d v_sum_y2 = _mm512_setzero_pd();
 
     for (size_t i = 0; i < simd_end; i += 8) {
-        __m512d dx = _mm512_sub_pd(_mm512_loadu_pd(&cx[i]), vmx);
-        __m512d dy = _mm512_sub_pd(_mm512_loadu_pd(&cy[i]), vmy);
+        __m512d dx = _mm512_sub_pd(_mm512_loadu_pd(&px[i]), vmx);
+        __m512d dy = _mm512_sub_pd(_mm512_loadu_pd(&py[i]), vmy);
         v_sum_xy = _mm512_fmadd_pd(dx, dy, v_sum_xy);
         v_sum_x2 = _mm512_fmadd_pd(dx, dx, v_sum_x2);
         v_sum_y2 = _mm512_fmadd_pd(dy, dy, v_sum_y2);
@@ -82,8 +94,8 @@ double pearson_correlation_avx512(const double* x, const double* y, size_t count
     double sy2 = hsum_pd(v_sum_y2);
 
     for (size_t i = simd_end; i < n; ++i) {
-        double dx = cx[i] - mean_x;
-        double dy = cy[i] - mean_y;
+        double dx = px[i] - mean_x;
+        double dy = py[i] - mean_y;
         sxy += dx * dy;
         sx2 += dx * dx;
         sy2 += dy * dy;

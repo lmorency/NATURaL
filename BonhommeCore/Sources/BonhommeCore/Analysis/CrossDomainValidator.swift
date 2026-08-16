@@ -432,7 +432,7 @@ public struct CrossDomainValidator: Sendable {
             ))
         }
 
-        guard observations.count >= 3 else { return nil }
+        guard observations.count >= configuration.crossDomainMinPairs else { return nil }
 
         let flexAIDValues = observations.map { abs($0.flexAIDDeltaSBits) }
         let scorpioValues = observations.map { abs($0.scorpioMinusTDeltaSKcal) }

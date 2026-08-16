@@ -47,17 +47,54 @@ static double circular_h(const std::vector<double>& a, int bins = DEFAULT_BIN_CO
 // ═══════════════════════════════════════════════════════════════════════════
 
 TEST_CASE("Circular: exactly ±180 boundary bins correctly", "[entropy][circular][simd]") {
-    // ±180 are adjacent on the circle; all mass near the cut → low H
+    // ±180 are the same angle; both canonicalize to -180 (bin 0) — low H
     std::vector<double> angles;
     for (int i = 0; i < 64; ++i) {
-        angles.push_back(180.0);   // maps to last bin (clamped)
-        angles.push_back(-180.0);  // first bin
+        angles.push_back(180.0);   // folds onto -180 → bin 0
+        angles.push_back(-180.0);  // bin 0
         angles.push_back(179.5);
         angles.push_back(-179.5);
     }
     double h = circular_h(angles);
     REQUIRE(h < 2.5);
     REQUIRE(h > 0.0);
+}
+
+TEST_CASE("Circular: -180 cut canonicalized identically across backends",
+          "[entropy][circular][simd][parity]") {
+    // Regression: NEON/AVX2/AVX-512 floor-fmod mapped -180 -> +180 (last bin)
+    // while scalar/Swift fmod mapped -180 -> bin 0. -180 and +179.5 are 0.5°
+    // apart on the circle and must fall in two adjacent bins regardless of backend.
+    std::vector<double> angles;
+    for (int i = 0; i < 100; ++i) {
+        angles.push_back(-180.0);
+        angles.push_back(179.5);
+    }
+
+    auto h_with = [&](BABackend b) {
+        ba_set_backend_override(b);
+        double h = -1.0;
+        REQUIRE(ba_circular_shannon_entropy(angles.data(), angles.size(),
+                                             DEFAULT_BIN_COUNT, &h) == BA_OK);
+        return h;
+    };
+
+    double h_scalar = h_with(BA_BACKEND_SCALAR);
+    double h_neon   = h_with(BA_BACKEND_NEON);
+    double h_avx2   = h_with(BA_BACKEND_AVX2);
+    double h_avx512 = h_with(BA_BACKEND_AVX512);
+    double h_metal  = h_with(BA_BACKEND_METAL);
+    ba_clear_backend_override();
+
+    // Uncompiled backends fall back to scalar via dispatch, so all must agree.
+    REQUIRE_THAT(h_neon,   WithinAbs(h_scalar, 1e-9));
+    REQUIRE_THAT(h_avx2,   WithinAbs(h_scalar, 1e-9));
+    REQUIRE_THAT(h_avx512, WithinAbs(h_scalar, 1e-9));
+    REQUIRE_THAT(h_metal,  WithinAbs(h_scalar, 1e-9));
+
+    // Two populated bins → H = 1.0 (not 0.0 as the pre-fix SIMD path returned).
+    REQUIRE(h_scalar > 0.9);
+    REQUIRE(h_scalar < 1.1);
 }
 
 TEST_CASE("Circular: multi-revolution angles match primary range", "[entropy][circular][simd]") {

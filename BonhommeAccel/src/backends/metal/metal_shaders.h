@@ -57,6 +57,7 @@ kernel void circular_histogram(
     a = fmod(a, 360.0f);
     if (a > 180.0f) a -= 360.0f;
     if (a < -180.0f) a += 360.0f;
+    if (a == 180.0f) a = -180.0f;
 
     int idx = (int)((a + 180.0f) / bin_width);
     if (idx < 0) idx = 0;
@@ -185,6 +186,7 @@ kernel void circular_histogram_batch(
     a = fmod(a, 360.0f);
     if (a > 180.0f) a -= 360.0f;
     if (a < -180.0f) a += 360.0f;
+    if (a == 180.0f) a = -180.0f;
 
     int idx = (int)((a + 180.0f) / bin_width);
     if (idx < 0) idx = 0;
